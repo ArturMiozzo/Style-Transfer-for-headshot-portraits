@@ -2,11 +2,16 @@ import cv2
 import numpy as np
 import os
 import math
+import scipy
+import skimage
 
 def showStack(stack):
     for image in stack:
-        cv2.imshow('stack', image)
+        cv2.imshow('stack', ((0.5+image) - (0.5+image).min()) / ((0.5+image).max() - (0.5+image).min()))
         cv2.waitKey(0)
+
+def normalize(img):
+    return img / 255
 
 class landmarksDetector:
     def __init__(self):
@@ -24,91 +29,61 @@ class landmarksDetector:
 
         return landmarks_res[0][0]
 
-def warpFace(src, pq1, pq2):
-        h, w = src.shape
-        trans_coord = np.meshgrid(range(h), range(w), indexing='ij')
-        yy, xx = trans_coord[0].astype(np.float64), trans_coord[1].astype(np.float64)  # might need to switch
+def warpFace(image, source_points, target_points):
+    imh, imw = image.shape
+    out_image = image.copy()
+    xs = np.arange(imw)
+    ys = np.arange(imh)
+    interpFN = scipy.interpolate.interp2d(xs, ys, image)
 
-        xsum = xx * 0.
-        ysum = yy * 0.
-        wsum = xx * 0.
-        for i in range(len(pq1) - 1):
-            if i in {16, 21, 26, 30, 35, 47}:
+    tri = scipy.spatial.Delaunay(source_points)
+
+    for triangle_indices in tri.simplices:
+
+        source_triangle = source_points[triangle_indices]
+        target_triangle = target_points[triangle_indices]
+
+        source_matrix = np.row_stack((source_triangle.transpose(), (1, 1, 1)))
+        target_matrix = np.row_stack((target_triangle.transpose(), (1, 1, 1)))
+        A = np.matmul(target_matrix, np.linalg.inv(source_matrix))
+
+        A_inverse = np.linalg.inv(A)
+
+        tri_rows = target_triangle.transpose()[1]
+        tri_cols = target_triangle.transpose()[0]
+
+        row_coordinates, col_coordinates = skimage.draw.polygon(tri_rows, tri_cols)
+
+        for x, y in zip(col_coordinates, row_coordinates):
+            #point inside target triangle mesh
+            point_in_target = np.array((x, y, 1))
+
+            #point inside source image
+            point_on_source = np.dot(A_inverse, point_in_target)
+
+            x_source = point_on_source[0]
+            y_source = point_on_source[1]
+
+            source_value = interpFN(x_source, y_source)
+            try:
+                out_image[y, x] = source_value
+            except IndexError:
                 continue
-            elif i == 41:
-                j = 36
-            elif i == 47:
-                j = 42
-            elif i == 59:
-                j = 48
-            elif i == 67:
-                j = 60
-            else:
-                j = i + 1
-            # Computes u, v
-            p_x1, p_y1 = (pq1[i, 0], pq1[i, 1])
-            q_x1, q_y1 = (pq1[j, 0], pq1[j, 1])
-            qp_x1 = q_x1 - p_x1
-            qp_y1 = q_y1 - p_y1
-            qpnorm1 = (qp_x1 ** 2 + qp_y1 ** 2) ** 0.5
 
-            u = ((xx - p_x1) * qp_x1 + (yy - p_y1) * qp_y1) / qpnorm1 ** 2
-            v = ((xx - p_x1) * -qp_y1 + (yy - p_y1) * qp_x1) / qpnorm1
+    #cv2.imshow('in', ((0.5+image) - (0.5+image).min()) / ((0.5+image).max() - (0.5+image).min()))
+    #cv2.imshow('out', ((0.5+out_image) - (0.5+out_image).min()) / ((0.5+out_image).max() - (0.5+out_image).min()))
+    #cv2.waitKey(0)
 
-            # Computes x', y'
-            p_x2, p_y2 = (pq2[i, 0], pq2[i, 1])
-            q_x2, q_y2 = (pq2[j, 0], pq2[j, 1])
-            qp_x2 = q_x2 - p_x2
-            qp_y2 = q_y2 - p_y2
-            qpnorm2 = (qp_x2 ** 2 + qp_y2 ** 2) ** 0.5
+    return out_image
 
-            x = p_x2 + u * (q_x2 - p_x2) + (v * -qp_y2) / qpnorm2  # X'(x)
-            y = p_y2 + u * (q_y2 - p_y2) + (v * qp_x2) / qpnorm2  # X'(y)
-
-            # Computes weights
-            d1 = ((xx - q_x1) ** 2 + (yy - q_y1) ** 2) ** 0.5
-            d2 = ((xx - p_x1) ** 2 + (yy - p_y1) ** 2) ** 0.5
-            d = np.abs(v)
-            d[u > 1] = d1[u > 1]
-            d[u < 0] = d2[u < 0]
-            W = (qpnorm1 ** 1 / (10 + d)) ** 1
-
-            wsum += W
-            xsum += W * x
-            ysum += W * y
-
-        x_m = xsum / wsum
-        y_m = ysum / wsum
-        vx = xx - x_m
-        vy = yy - y_m
-        vx[x_m < 1] = 0
-        vx[x_m > w] = 0
-        vy[y_m < 1] = 0
-        vy[y_m > h] = 0
-
-        vx = (vx + xx).astype(int)
-        vy = (vy + yy).astype(int)
-        vx[vx >= w] = w - 1
-        vy[vy >= h] = h - 1
-
-        warp = np.ones(src.shape)
-        warp[yy.astype(int), xx.astype(int)] = src[vy, vx]
-
-        return warp, vx, vy
-
-def denseCorrespondence(input, port, energy_port):
+def denseCorrespondence(energy_port, landmarks_input, landmarks_port):
     
-    detector = landmarksDetector()
-
-    landmarks_input = detector.getLandmarks(input)
-    landmarks_port = detector.getLandmarks(port)
-
     denseCorrespondence = []
 
     for image in energy_port:
-        denseCorrespondence.append(warpFace(image, landmarks_input, landmarks_port))
+        denseCorrespondence.append(warpFace(image, landmarks_port, landmarks_input))
 
-    showStack(denseCorrespondence)
+    #showStack(denseCorrespondence)
 
     return denseCorrespondence
 
@@ -116,55 +91,102 @@ def computeDecomposition(image, stackSize):
 
     laplaceStack = []
     energyStack = []
+    residualStack = []
 
-    ksize = stackSize*stackSize
+    imageNorm = normalize(image)
+  
+    ksize = 5*2 + 1
 
-    laplaceStack.append(127 + image - cv2.GaussianBlur(image, (ksize,ksize), 2))
+    laplaceStack.append(imageNorm - cv2.GaussianBlur(imageNorm, (ksize,ksize), 2))
 
-    for i in range(1, stackSize):            
-        laplaceStack.append(127+(cv2.GaussianBlur(image, (ksize,ksize), pow(2,i)) - cv2.GaussianBlur(image, (ksize,ksize), pow(2,i+1))))
+    for i in range(1, stackSize):       
+        ksize = 5*pow(2,i) + 1
+        laplaceStack.append(cv2.GaussianBlur(imageNorm, (ksize,ksize), pow(2,i)) - cv2.GaussianBlur(imageNorm, (5*pow(2,i+1) + 1,5*pow(2,i+1) + 1), pow(2,i+1)))
         
-    for i in range(stackSize):     
+    for i in range(stackSize):    
+        ksize = 5*pow(2,i+1) + 1
         energyStack.append(cv2.GaussianBlur(np.square(laplaceStack[i]), (ksize,ksize), pow(2,i+1)))
+    
+    ksize = 5*pow(2,stackSize) + 1
+    residual = cv2.GaussianBlur(imageNorm, (ksize,ksize), pow(2,stackSize))
     
     #showStack(laplaceStack)
     #showStack(energyStack)
 
-    return laplaceStack, energyStack    
+    return laplaceStack, energyStack, residual
 
 def robustTransfer(laplaceStack, energyStack, denseCorrespondence):
 
     outputStack = []
+    ksize = len(laplaceStack)*len(laplaceStack)
 
     for i in range(len(laplaceStack)):
-        outputStack.append(laplaceStack[i]*np.sqrt(denseCorrespondence[i]/(energyStack[i]+pow(0.01,2))))
+        gain = np.sqrt((denseCorrespondence[i])/((energyStack[i])+pow(0.01,2)))
+        gain[gain > 2.8] = 2.8
+        gain[gain < 0.9] = 0.9  
+
+        ksize = 5*pow(2,i+1) + 1
+        outputStack.append((laplaceStack[i])*cv2.GaussianBlur(gain, (ksize,ksize), 3*pow(2,i)))
     
-    showStack(outputStack)
+    #showStack(outputStack)
     
     return outputStack
 
-inputImage = 'jose.jpg'
-portImage = 'george.jpg'
+def sumStack(image, stack):
+
+    final_image = normalize(image)
+
+    for img in stack:
+        final_image += img
+    
+    final_image = (final_image - final_image.min()) / (final_image.max() - final_image.min())
+
+    return (final_image * 255).astype(np.uint8)
+
+inputImage = 'farido.png'
+portImage = 'turing.jpeg'
 
 image_input = cv2.imread(inputImage)
 image_port = cv2.imread(portImage)
 
-input_gray = cv2.cvtColor(image_input, cv2.COLOR_RGB2GRAY)
-port_gray = cv2.cvtColor(image_port, cv2.COLOR_RGB2GRAY)
+detector = landmarksDetector()
 
-input_laplace, input_energy = computeDecomposition(input_gray, 7)
-_, port_energy = computeDecomposition(port_gray, 7)
+landmarks_input = detector.getLandmarks(image_input)
+landmarks_port = detector.getLandmarks(image_port)
 
-port_correspondence = denseCorrespondence(input_gray, port_gray, port_energy)
+if len(image_input.shape)>2:
+    channel_count = image_input.shape[2]
+else:
+    channel_count = 1
 
-robust_transfer = robustTransfer(input_laplace, input_energy, port_correspondence)
+output = []
 
-image_merge = np.concatenate((image_input, image_port), axis=1)
-height, width = image_input.shape[0:2]
+for channel in range(channel_count):
+
+    input_gray = cv2.split(image_input)[channel]
+    port_gray = cv2.split(image_port)[channel]
+
+    input_laplace, input_energy, input_residual = computeDecomposition(input_gray, 7)
+    _, port_energy, port_residual = computeDecomposition(port_gray, 7)
+
+    port_correspondence = denseCorrespondence(port_energy, landmarks_input, landmarks_port)
+
+    robust_transfer = robustTransfer(input_laplace, input_energy, port_correspondence)
+    
+    robust_transfer.append(warpFace(port_residual, landmarks_port, landmarks_input))
+
+    output.append(sumStack(input_gray, robust_transfer))
+
+completeOutput = cv2.merge(output)
+
+#image_merge = np.concatenate((input_gray, output), axis=1)
+#height, width = image_input.shape[0:2]
 
 #sift = cv2.SIFT_create()
 #kp = sift.detect(image_gray,None)
 #image=cv2.drawKeypoints(image_gray,kp,image)
 
-cv2.imshow('input',image_merge)
+cv2.imshow('input', image_input)
+cv2.imshow('port', image_port)
+cv2.imshow('style', completeOutput)
 cv2.waitKey(0)
