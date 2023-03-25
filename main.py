@@ -4,6 +4,20 @@ import os
 import math
 import scipy
 import skimage
+import glob
+
+def writeStack(stack, path):
+    
+    global batchName
+    
+    directory = path+'_'+batchName
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+    index = len(glob.glob(directory+'\*.png'))
+    for image in stack:
+        cv2.imwrite(directory+'\\'+str(index)+'.png', 255*(((0.5+image) - (0.5+image).min()) / ((0.5+image).max() - (0.5+image).min())))
+        index+=1
 
 def showStack(stack):
     for image in stack:
@@ -84,7 +98,7 @@ def denseCorrespondence(energy_port, landmarks_input, landmarks_port):
         # para cada imagem na pilha, faz a transformação da face do retrato com a face da entrada
         denseCorrespondence.append(warpFace(image, landmarks_port, landmarks_input))
 
-    #showStack(denseCorrespondence)
+    writeStack(denseCorrespondence, 'correspondence')
 
     return denseCorrespondence
 
@@ -98,28 +112,28 @@ def computeDecomposition(image, stackSize):
   
     # tamanho do filtro gaussiano, o artigo indica para usar 5*2**i+1, sendo i a posição na pilha
     # como esse é o 0, fica 5*2+1 
-    ksize = 5*2 + 1
+    ksize = stackSize*stackSize
 
     # seguindo a formula, para a primeira entrada faz a imagem - gaussiano dela com desvio 2
     laplaceStack.append(imageNorm - cv2.GaussianBlur(imageNorm, (ksize,ksize), 2))
 
     for i in range(1, stackSize):        
         # para as proximas faz a gaussiana de 2**i - a gaussiana de 2**i+1   
-        ksize = 5*pow(2,i) + 1
-        laplaceStack.append(cv2.GaussianBlur(imageNorm, (ksize,ksize), pow(2,i)) - cv2.GaussianBlur(imageNorm, (5*pow(2,i+1) + 1,5*pow(2,i+1) + 1), pow(2,i+1)))
+        laplaceStack.append(cv2.GaussianBlur(imageNorm, (ksize,ksize), pow(2,i)) - cv2.GaussianBlur(imageNorm, (ksize,ksize), pow(2,i+1)))
         
     for i in range(stackSize):    
-        ksize = 5*pow(2,i+1) + 1
         # para o mapa de energia, calcula a saida com a laplace de mesmo indice ao quadrado, convolucionada
         # com gaussiana 2**i+1
         energyStack.append(cv2.GaussianBlur(np.square(laplaceStack[i]), (ksize,ksize), pow(2,i+1)))
     
     # o residuo é apenas uma imagem da convulação da entrada com filtro de desvio 2**tamanho da pilha
-    ksize = 5*pow(2,stackSize) + 1
     residual = cv2.GaussianBlur(imageNorm, (ksize,ksize), pow(2,stackSize))
     
     # pode exibir ou salvar o resultado...
     #showStack(laplaceStack)
+    writeStack(laplaceStack, 'laplace')
+    writeStack(energyStack, 'energy')
+    writeStack([residual], 'residual')
     #showStack(energyStack)
 
     # returna as duas pilhas e o residuo
@@ -129,9 +143,10 @@ def robustTransfer(laplaceStack, energyStack, denseCorrespondence):
 
     # inicializa a saida
     outputStack = []
+    stackSize = len(laplaceStack)
 
     # para cada posição na pilha
-    for i in range(len(laplaceStack)):
+    for i in range(stackSize):
 
         # calcula o ganho de acordo com o artigo
         # a raiz quadrada da divisão da correspondencia do retrato com o mapa de energia da imagme de entrada
@@ -142,7 +157,7 @@ def robustTransfer(laplaceStack, energyStack, denseCorrespondence):
         gain[gain > 2.8] = 2.8
         gain[gain < 0.9] = 0.9  
 
-        ksize = 5*pow(2,i+1) + 1
+        ksize = stackSize*stackSize
         # por fim multiplica a laplaciana da entrada com uma gaussiana da imagem de ganho
         outputStack.append((laplaceStack[i])*cv2.GaussianBlur(gain, (ksize,ksize), 3*pow(2,i)))
     
@@ -166,64 +181,71 @@ def sumStack(image, stack):
     # e retorna ja em escala de 0 a 255
     return (final_image * 255).astype(np.uint8)
 
-inputImage = 'farido.png'
-portImage = 'turing.jpeg'
+inputImage = ['farido.png']
+portImage = ['gigachad.png']
 
-# carrega as imagens
-image_input = cv2.imread(inputImage)
-image_port = cv2.imread(portImage)
+for i in range(len(inputImage)):
 
-# inicia o detector dos pontos da face
-detector = landmarksDetector()
+    global batchName
+    batchName = os.path.splitext(inputImage[i])[0]+'-'+os.path.splitext(portImage[i])[0]
 
-# carrega os pontos para a entrada e o retrato
-landmarks_input = detector.getLandmarks(image_input)
-landmarks_port = detector.getLandmarks(image_port)
+    # carrega as imagens
+    image_input = cv2.imread(inputImage[i])
+    image_port = cv2.imread(portImage[i])
 
-# verifica o numero da canais das imagens
-if len(image_input.shape)>2:
-    channel_count = image_input.shape[2]
-else:
-    channel_count = 1
+    # inicia o detector dos pontos da face
+    detector = landmarksDetector()
 
-# inicializa a saida, vai ter 3 imagens se for colorido e 1 se for cinza
-output = []
+    # carrega os pontos para a entrada e o retrato
+    landmarks_input = detector.getLandmarks(image_input)
+    landmarks_port = detector.getLandmarks(image_port)
 
-# para cada canal de cor, faz todo o processamento
-for channel in range(channel_count):
-    
-    # pega o canal correspondente de cada imagem
-    input_gray = cv2.split(image_input)[channel]
-    port_gray = cv2.split(image_port)[channel]
+    # verifica o numero da canais das imagens
+    if len(image_input.shape)>2:
+        channel_count = image_input.shape[2]
+    else:
+        channel_count = 1
 
-    # a funcao computeDecomposition retorna as pilhas do laplace, do mapa de energia e o residuo
-    # usa o tamanho como 7 pois acima disso restam poucas altas frequencias
-    input_laplace, input_energy, input_residual = computeDecomposition(input_gray, 7)
-    _, port_energy, port_residual = computeDecomposition(port_gray, 7)
+    # inicializa a saida, vai ter 3 imagens se for colorido e 1 se for cinza
+    output = []
 
-    # faz a correspondencia da image de entrada com o mapa de energia do retrato
-    port_correspondence = denseCorrespondence(port_energy, landmarks_input, landmarks_port)
+    # para cada canal de cor, faz todo o processamento
+    for channel in range(channel_count):
+        
+        # pega o canal correspondente de cada imagem
+        input_gray = cv2.split(image_input)[channel]
+        port_gray = cv2.split(image_port)[channel]
 
-    # realiza a transferencia para cada posicao das pilhas
-    robust_transfer = robustTransfer(input_laplace, input_energy, port_correspondence)
-    
-    # por fim faz a correspondencia da imagem de residuo do retrato
-    robust_transfer.append(warpFace(port_residual, landmarks_port, landmarks_input))
+        # a funcao computeDecomposition retorna as pilhas do laplace, do mapa de energia e o residuo
+        # usa o tamanho como 7 pois acima disso restam poucas altas frequencias
+        input_laplace, input_energy, input_residual = computeDecomposition(input_gray, 7)
+        _, port_energy, port_residual = computeDecomposition(port_gray, 7)
 
-    # desfaz as operações somando tudo da pilha na imagem de entrada
-    # adicionando como um canal a imagem de saida
-    output.append(sumStack(input_gray, robust_transfer))
+        # faz a correspondencia da image de entrada com o mapa de energia do retrato
+        port_correspondence = denseCorrespondence(port_energy, landmarks_input, landmarks_port)
 
-completeOutput = cv2.merge(output)
+        # realiza a transferencia para cada posicao das pilhas
+        robust_transfer = robustTransfer(input_laplace, input_energy, port_correspondence)
+        
+        # por fim faz a correspondencia da imagem de residuo do retrato
+        robust_transfer.append(warpFace(port_residual, landmarks_port, landmarks_input))
 
-#image_merge = np.concatenate((input_gray, output), axis=1)
-#height, width = image_input.shape[0:2]
+        # desfaz as operações somando tudo da pilha na imagem de entrada
+        # adicionando como um canal a imagem de saida
+        output.append(sumStack(input_gray, robust_transfer))
 
-#sift = cv2.SIFT_create()
-#kp = sift.detect(image_gray,None)
-#image=cv2.drawKeypoints(image_gray,kp,image)
+    completeOutput = cv2.merge(output)
 
-cv2.imshow('input', image_input)
-cv2.imshow('port', image_port)
-cv2.imshow('style', completeOutput)
-cv2.waitKey(0)
+    writeStack([completeOutput], 'output')
+
+    #image_merge = np.concatenate((input_gray, output), axis=1)
+    #height, width = image_input.shape[0:2]
+
+    #sift = cv2.SIFT_create()
+    #kp = sift.detect(image_gray,None)
+    #image=cv2.drawKeypoints(image_gray,kp,image)
+
+    #cv2.imshow('input', image_input)
+    #cv2.imshow('port', image_port)
+    #cv2.imshow('style', completeOutput)
+    #cv2.waitKey(0)
