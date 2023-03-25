@@ -81,6 +81,7 @@ def denseCorrespondence(energy_port, landmarks_input, landmarks_port):
     denseCorrespondence = []
 
     for image in energy_port:
+        # para cada imagem na pilha, faz a transformação da face do retrato com a face da entrada
         denseCorrespondence.append(warpFace(image, landmarks_port, landmarks_input))
 
     #showStack(denseCorrespondence)
@@ -91,41 +92,58 @@ def computeDecomposition(image, stackSize):
 
     laplaceStack = []
     energyStack = []
-    residualStack = []
 
+    # normaliza a imagem de entrada para poder assumir valores negativos entre 0 e 1
     imageNorm = normalize(image)
   
+    # tamanho do filtro gaussiano, o artigo indica para usar 5*2**i+1, sendo i a posição na pilha
+    # como esse é o 0, fica 5*2+1 
     ksize = 5*2 + 1
 
+    # seguindo a formula, para a primeira entrada faz a imagem - gaussiano dela com desvio 2
     laplaceStack.append(imageNorm - cv2.GaussianBlur(imageNorm, (ksize,ksize), 2))
 
-    for i in range(1, stackSize):       
+    for i in range(1, stackSize):        
+        # para as proximas faz a gaussiana de 2**i - a gaussiana de 2**i+1   
         ksize = 5*pow(2,i) + 1
         laplaceStack.append(cv2.GaussianBlur(imageNorm, (ksize,ksize), pow(2,i)) - cv2.GaussianBlur(imageNorm, (5*pow(2,i+1) + 1,5*pow(2,i+1) + 1), pow(2,i+1)))
         
     for i in range(stackSize):    
         ksize = 5*pow(2,i+1) + 1
+        # para o mapa de energia, calcula a saida com a laplace de mesmo indice ao quadrado, convolucionada
+        # com gaussiana 2**i+1
         energyStack.append(cv2.GaussianBlur(np.square(laplaceStack[i]), (ksize,ksize), pow(2,i+1)))
     
+    # o residuo é apenas uma imagem da convulação da entrada com filtro de desvio 2**tamanho da pilha
     ksize = 5*pow(2,stackSize) + 1
     residual = cv2.GaussianBlur(imageNorm, (ksize,ksize), pow(2,stackSize))
     
+    # pode exibir ou salvar o resultado...
     #showStack(laplaceStack)
     #showStack(energyStack)
 
+    # returna as duas pilhas e o residuo
     return laplaceStack, energyStack, residual
 
 def robustTransfer(laplaceStack, energyStack, denseCorrespondence):
 
+    # inicializa a saida
     outputStack = []
-    ksize = len(laplaceStack)*len(laplaceStack)
 
+    # para cada posição na pilha
     for i in range(len(laplaceStack)):
+
+        # calcula o ganho de acordo com o artigo
+        # a raiz quadrada da divisão da correspondencia do retrato com o mapa de energia da imagme de entrada
+        # para evitar divisao 0/0 soma um valor infimo de 0,01**2
         gain = np.sqrt((denseCorrespondence[i])/((energyStack[i])+pow(0.01,2)))
+
+        # segundo o artigo, o ganho deve ser truncado entre 0.9 e 2.8
         gain[gain > 2.8] = 2.8
         gain[gain < 0.9] = 0.9  
 
         ksize = 5*pow(2,i+1) + 1
+        # por fim multiplica a laplaciana da entrada com uma gaussiana da imagem de ganho
         outputStack.append((laplaceStack[i])*cv2.GaussianBlur(gain, (ksize,ksize), 3*pow(2,i)))
     
     #showStack(outputStack)
@@ -134,47 +152,66 @@ def robustTransfer(laplaceStack, energyStack, denseCorrespondence):
 
 def sumStack(image, stack):
 
+    # normaliza a imagem de entrada entre 0 e 1
     final_image = normalize(image)
-
+    
+    # para cada imagem na pilha, soma a entrada
     for img in stack:
         final_image += img
     
+    # por ultimo normaliza a imagem de saida, 
+    # ja que pode ficar com valores negativos ou maiores que 1
     final_image = (final_image - final_image.min()) / (final_image.max() - final_image.min())
 
+    # e retorna ja em escala de 0 a 255
     return (final_image * 255).astype(np.uint8)
 
 inputImage = 'farido.png'
 portImage = 'turing.jpeg'
 
+# carrega as imagens
 image_input = cv2.imread(inputImage)
 image_port = cv2.imread(portImage)
 
+# inicia o detector dos pontos da face
 detector = landmarksDetector()
 
+# carrega os pontos para a entrada e o retrato
 landmarks_input = detector.getLandmarks(image_input)
 landmarks_port = detector.getLandmarks(image_port)
 
+# verifica o numero da canais das imagens
 if len(image_input.shape)>2:
     channel_count = image_input.shape[2]
 else:
     channel_count = 1
 
+# inicializa a saida, vai ter 3 imagens se for colorido e 1 se for cinza
 output = []
 
+# para cada canal de cor, faz todo o processamento
 for channel in range(channel_count):
-
+    
+    # pega o canal correspondente de cada imagem
     input_gray = cv2.split(image_input)[channel]
     port_gray = cv2.split(image_port)[channel]
 
+    # a funcao computeDecomposition retorna as pilhas do laplace, do mapa de energia e o residuo
+    # usa o tamanho como 7 pois acima disso restam poucas altas frequencias
     input_laplace, input_energy, input_residual = computeDecomposition(input_gray, 7)
     _, port_energy, port_residual = computeDecomposition(port_gray, 7)
 
+    # faz a correspondencia da image de entrada com o mapa de energia do retrato
     port_correspondence = denseCorrespondence(port_energy, landmarks_input, landmarks_port)
 
+    # realiza a transferencia para cada posicao das pilhas
     robust_transfer = robustTransfer(input_laplace, input_energy, port_correspondence)
     
+    # por fim faz a correspondencia da imagem de residuo do retrato
     robust_transfer.append(warpFace(port_residual, landmarks_port, landmarks_input))
 
+    # desfaz as operações somando tudo da pilha na imagem de entrada
+    # adicionando como um canal a imagem de saida
     output.append(sumStack(input_gray, robust_transfer))
 
 completeOutput = cv2.merge(output)
