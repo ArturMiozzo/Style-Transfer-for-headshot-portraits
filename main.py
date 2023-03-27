@@ -5,6 +5,7 @@ import math
 import scipy
 import skimage
 import glob
+import sys
 
 def writeStack(stack, path):
     
@@ -98,7 +99,7 @@ def denseCorrespondence(energy_port, landmarks_input, landmarks_port):
         # para cada imagem na pilha, faz a transformação da face do retrato com a face da entrada
         denseCorrespondence.append(warpFace(image, landmarks_port, landmarks_input))
 
-    writeStack(denseCorrespondence, 'correspondence')
+    #writeStack(denseCorrespondence, 'correspondence')
 
     return denseCorrespondence
 
@@ -131,9 +132,9 @@ def computeDecomposition(image, stackSize):
     
     # pode exibir ou salvar o resultado...
     #showStack(laplaceStack)
-    writeStack(laplaceStack, 'laplace')
-    writeStack(energyStack, 'energy')
-    writeStack([residual], 'residual')
+    #writeStack(laplaceStack, 'laplace')
+    #writeStack(energyStack, 'energy')
+    #writeStack([residual], 'residual')
     #showStack(energyStack)
 
     # returna as duas pilhas e o residuo
@@ -181,21 +182,34 @@ def sumStack(image, stack):
     # e retorna ja em escala de 0 a 255
     return (final_image * 255).astype(np.uint8)
 
-inputImage = ['farido.png']
-portImage = ['gigachad.png']
+print('Style Transfer for Headshot Portraits')
+print('Artur Chika Miozzo e Mauricio B. da Rocha')
+
+if len(sys.argv)>2:
+    inputImage = [sys.argv[1]]
+    portImage = [sys.argv[2]]
+else:
+    inputImage = ['farido.png']
+    portImage = ['turing.jpeg']
 
 for i in range(len(inputImage)):
 
     global batchName
     batchName = os.path.splitext(inputImage[i])[0]+'-'+os.path.splitext(portImage[i])[0]
+    
+    
+    print('Transferindo estilo de '+os.path.splitext(inputImage[i])[0] + ' para '+os.path.splitext(portImage[i])[0])
 
     # carrega as imagens
     image_input = cv2.imread(inputImage[i])
     image_port = cv2.imread(portImage[i])
 
+    print('Carregando detector de pontos da face...')
+    
     # inicia o detector dos pontos da face
     detector = landmarksDetector()
-
+        
+    print('Detectando pontos da face...')
     # carrega os pontos para a entrada e o retrato
     landmarks_input = detector.getLandmarks(image_input)
     landmarks_port = detector.getLandmarks(image_port)
@@ -211,18 +225,26 @@ for i in range(len(inputImage)):
 
     # para cada canal de cor, faz todo o processamento
     for channel in range(channel_count):
+            
+        print('Processando canal '+str(channel)+'...')
         
         # pega o canal correspondente de cada imagem
         input_gray = cv2.split(image_input)[channel]
         port_gray = cv2.split(image_port)[channel]
+                
+        print('Montando pilhas de frequencia...')
 
         # a funcao computeDecomposition retorna as pilhas do laplace, do mapa de energia e o residuo
         # usa o tamanho como 7 pois acima disso restam poucas altas frequencias
         input_laplace, input_energy, input_residual = computeDecomposition(input_gray, 7)
         _, port_energy, port_residual = computeDecomposition(port_gray, 7)
+                
+        print('Executando correspondencia densa...')
 
         # faz a correspondencia da image de entrada com o mapa de energia do retrato
         port_correspondence = denseCorrespondence(port_energy, landmarks_input, landmarks_port)
+                
+        print('Executando transferencia robusta...')
 
         # realiza a transferencia para cada posicao das pilhas
         robust_transfer = robustTransfer(input_laplace, input_energy, port_correspondence)
@@ -230,13 +252,21 @@ for i in range(len(inputImage)):
         # por fim faz a correspondencia da imagem de residuo do retrato
         robust_transfer.append(warpFace(port_residual, landmarks_port, landmarks_input))
 
+        print('Recompondo pilhas na saida...')
+        
         # desfaz as operações somando tudo da pilha na imagem de entrada
         # adicionando como um canal a imagem de saida
         output.append(sumStack(input_gray, robust_transfer))
+        
+        print('Concluido canal '+str(channel)+'.')
 
     completeOutput = cv2.merge(output)
-
+    
+    print('Processamento concluido.')
+        
     writeStack([completeOutput], 'output')
+        
+    print('Resultado escrito na pasta output.')
 
     #image_merge = np.concatenate((input_gray, output), axis=1)
     #height, width = image_input.shape[0:2]
@@ -245,7 +275,7 @@ for i in range(len(inputImage)):
     #kp = sift.detect(image_gray,None)
     #image=cv2.drawKeypoints(image_gray,kp,image)
 
-    #cv2.imshow('input', image_input)
-    #cv2.imshow('port', image_port)
-    #cv2.imshow('style', completeOutput)
-    #cv2.waitKey(0)
+    cv2.imshow('input', image_input)
+    cv2.imshow('port', image_port)
+    cv2.imshow('style', completeOutput)
+    cv2.waitKey(0)
