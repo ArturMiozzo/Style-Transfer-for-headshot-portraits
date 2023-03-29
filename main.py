@@ -45,24 +45,35 @@ class landmarksDetector:
         return landmarks_res[0][0]
 
 def warpFace(image, source_points, target_points):
+    
+    # gera a matrix de saida como uma copia da entrada
     imh, imw = image.shape
     out_image = image.copy()
     xs = np.arange(imw)
     ys = np.arange(imh)
     interpFN = scipy.interpolate.interp2d(xs, ys, image)
 
+    # utiliza delaunay para gerar uma triangulação entre todos os pontos da face
+    # isso faz com que seja gerado a minima figura que os pontos sejam inscritos
+    # e todos os pontos sejam correlacionados entre 3
     tri = scipy.spatial.Delaunay(source_points)
 
+    # para cada ponto da face
     for triangle_indices in tri.simplices:
 
+        # obtemos a regiao dele na entrada, e na saida
         source_triangle = source_points[triangle_indices]
         target_triangle = target_points[triangle_indices]
 
+        # geramos uma matriz 3x3 com o x y de cada ponto e completamos com 1 para fechar
         source_matrix = np.row_stack((source_triangle.transpose(), (1, 1, 1)))
         target_matrix = np.row_stack((target_triangle.transpose(), (1, 1, 1)))
+        
+        # multiplicamos a saida pela inversa da entrada, e invertemos na saida novamente
         A = np.matmul(target_matrix, np.linalg.inv(source_matrix))
-
         A_inverse = np.linalg.inv(A)
+
+        # isso faz com que tenhamos uma relação
 
         tri_rows = target_triangle.transpose()[1]
         tri_cols = target_triangle.transpose()[0]
@@ -70,10 +81,9 @@ def warpFace(image, source_points, target_points):
         row_coordinates, col_coordinates = skimage.draw.polygon(tri_rows, tri_cols)
 
         for x, y in zip(col_coordinates, row_coordinates):
-            #point inside target triangle mesh
+            
             point_in_target = np.array((x, y, 1))
 
-            #point inside source image
             point_on_source = np.dot(A_inverse, point_in_target)
 
             x_source = point_on_source[0]
