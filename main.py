@@ -53,15 +53,15 @@ def warpFace(image, source_points, target_points):
     ys = np.arange(imh)
     interpFN = scipy.interpolate.interp2d(xs, ys, image)
 
-    # utiliza delaunay para gerar uma triangulação entre todos os pontos da face
+    # utiliza o algoritmo de delaunay para gerar uma triangulação entre todos os pontos da face
     # isso faz com que seja gerado a minima figura que os pontos sejam inscritos
     # e todos os pontos sejam correlacionados entre 3
     tri = scipy.spatial.Delaunay(source_points)
 
-    # para cada ponto da face
+    # para cada triangulo de pontos
     for triangle_indices in tri.simplices:
 
-        # obtemos a regiao dele na entrada, e na saida
+        # obtemos os pontos na entrada, e na saida
         source_triangle = source_points[triangle_indices]
         target_triangle = target_points[triangle_indices]
 
@@ -70,20 +70,24 @@ def warpFace(image, source_points, target_points):
         target_matrix = np.row_stack((target_triangle.transpose(), (1, 1, 1)))
         
         # multiplicamos a saida pela inversa da entrada, e invertemos na saida novamente
+        # conforme a descrição da tecnica em outras implementações
         A = np.matmul(target_matrix, np.linalg.inv(source_matrix))
         A_inverse = np.linalg.inv(A)
 
-        # isso faz com que tenhamos uma relação
+        # isso faz com que possemos obter a maior semelhança entre o triangulo da entrada e da saida
 
+        # e gerando um polygono entre os pontos, obtemos a matriz de pontos em coordendas da imagem
         tri_rows = target_triangle.transpose()[1]
         tri_cols = target_triangle.transpose()[0]
 
         row_coordinates, col_coordinates = skimage.draw.polygon(tri_rows, tri_cols)
-
+        
+        # por fim iteramos sob os pontos
         for x, y in zip(col_coordinates, row_coordinates):
             
             point_in_target = np.array((x, y, 1))
-
+            
+            # e aplicamos o kernel da triangulação na imagem de saida 
             point_on_source = np.dot(A_inverse, point_in_target)
 
             x_source = point_on_source[0]
